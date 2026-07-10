@@ -5,15 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>RC Location Map / ផែនទីទីតាំង RC</title>
 
-<!-- PWA install support -->
-<link rel="manifest" href="manifest.json">
+<!-- PWA setup: makes this installable as an app on phones -->
+<link rel="manifest" href="./manifest.json">
 <meta name="theme-color" content="#1b5e20">
-<link rel="icon" href="icon-192.png">
-<link rel="apple-touch-icon" href="icon-192.png">
-<meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="RC Mapper">
+<meta name="apple-mobile-web-app-title" content="RC Map">
+<link rel="apple-touch-icon" href="./icon-192.png">
 
 <!-- ====================================================================
      SETUP: fill in these three values before deploying
@@ -83,41 +81,6 @@
   #topBar button.secondary:hover { background: #555; }
   #topBar button.adminBtn { background: #8e24aa; }
   #topBar button.adminBtn:hover { background: #6a1b7a; }
-  #rcSearchBox { position: relative; flex: 1; min-width: 220px; max-width: 360px; }
-  #rcSearchBox input {
-    width: 100%;
-    padding: 7px 10px;
-    border-radius: 6px;
-    border: none;
-    font-size: 14px;
-  }
-  #rcSearchResults {
-    display: none;
-    position: absolute;
-    top: 100%; left: 0; right: 0;
-    background: white;
-    border-radius: 8px;
-    margin-top: 4px;
-    max-height: 280px;
-    overflow-y: auto;
-    box-shadow: 0 4px 14px rgba(0,0,0,0.3);
-    z-index: 40;
-  }
-  #rcSearchResults .rcResultItem {
-    padding: 9px 10px;
-    border-bottom: 1px solid #eee;
-    cursor: pointer;
-    color: #1f2d24;
-    font-size: 13px;
-  }
-  #rcSearchResults .rcResultItem:last-child { border-bottom: none; }
-  #rcSearchResults .rcResultItem:hover, #rcSearchResults .rcResultItem.active { background: #f4f6f5; }
-  #rcSearchResults .rcResultItem .rcName { font-weight: bold; }
-  #rcSearchResults .rcResultItem .rcMeta { font-size: 11px; color: #666; margin-top: 2px; }
-  #rcSearchResults .rcStatus { float: right; font-size: 11px; padding: 2px 7px; border-radius: 10px; }
-  #rcSearchResults .rcStatus.pinned { background: #e8f5e9; color: #1b5e20; }
-  #rcSearchResults .rcStatus.unpinned { background: #fff3cd; color: #664d03; }
-  #rcSearchResults .rcNoResults { padding: 12px; font-size: 13px; color: #888; text-align: center; }
   #searchBox { display: flex; gap: 6px; flex: 1; min-width: 200px; max-width: 340px; position: relative; }
   #searchBox input {
     flex: 1;
@@ -275,10 +238,6 @@
 <div id="appScreen">
   <div id="topBar">
     <div class="userInfo" id="userInfo"></div>
-    <div id="rcSearchBox">
-      <input type="text" id="rcSearchInput" placeholder="🔍 Search RC: name or last 4-digit ID / ស្វែងរក RC" autocomplete="off">
-      <div id="rcSearchResults"></div>
-    </div>
     <div id="searchBox">
       <input type="text" id="villageSearchInput" list="villageDatalist" placeholder="Search village name... / ស្វែងរកភូមិ">
       <datalist id="villageDatalist"></datalist>
@@ -286,6 +245,7 @@
     </div>
     <div id="topBtnGroup">
       <button id="togglePinModeBtn">➕ Pin RC</button>
+      <button id="findChildBtn">🔍 Find RC</button>
       <button class="adminBtn" id="toggleVillageCenterBtn" style="display:none;">📌 Set Village Center</button>
       <button class="secondary" id="signOutBtn">Sign out</button>
     </div>
@@ -354,7 +314,6 @@ let villageCenters = []; // { district, commune, village, lat, lng }
 let villageCentersByKey = {}; // "district|commune|village" -> center
 let villageDisplayToKey = {}; // "Village - Commune - District" -> "district|commune|village"
 let selectedVillageForPin = null; // { district, commune, village }
-let preSelectedChildId = null; // set when a specific child was chosen via the RC search box
 
 // ---------- Google Sign-In ----------
 window.onload = function() {
@@ -469,14 +428,33 @@ function initMapAndLoadMarkers(locations) {
   setup();
 }
 
+function toDirectImageUrl(url) {
+  if (!url) return '';
+  url = url.trim();
+  // Convert common Google Drive "share" link formats into a direct-viewable image URL.
+  // e.g. https://drive.google.com/file/d/FILE_ID/view?usp=sharing
+  const driveMatch = url.match(/drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/);
+  if (driveMatch) {
+    return 'https://drive.google.com/uc?export=view&id=' + driveMatch[1];
+  }
+  // e.g. https://drive.google.com/open?id=FILE_ID
+  const driveOpenMatch = url.match(/drive\.google\.com\/open\?id=([a-zA-Z0-9_-]+)/);
+  if (driveOpenMatch) {
+    return 'https://drive.google.com/uc?export=view&id=' + driveOpenMatch[1];
+  }
+  return url; // any other direct image URL is used as-is
+}
+
 function addMarkerForLocation(loc) {
   const marker = new google.maps.Marker({
     position: { lat: parseFloat(loc.lat), lng: parseFloat(loc.lng) },
     map: map,
     title: 'Child ID: ' + loc.childId + (loc.childName ? ' - ' + loc.childName : '')
   });
+  const photoSrc = toDirectImageUrl(loc.childPhotoUrl);
   const info = new google.maps.InfoWindow({
     content: `<div class="infoWindowContent">
+        ${photoSrc ? `<img src="${escapeHtml(photoSrc)}" alt="Photo" style="width:100%;max-width:220px;border-radius:8px;margin-bottom:6px;display:block;" onerror="this.style.display='none';">` : ''}
         <strong>Child ID:</strong> ${escapeHtml(loc.childId)}<br>
         ${loc.childName ? '<strong>Name:</strong> ' + escapeHtml(loc.childName) + '<br>' : ''}
         ${loc.notes ? '<em>' + escapeHtml(loc.notes) + '</em><br>' : ''}
@@ -689,11 +667,6 @@ function onHouseholdMapTapped(lat, lng) {
     children.map(c => `<option value="${escapeHtml(c.childId)}">${escapeHtml(c.childId)} - ${escapeHtml(c.name)}</option>`).join('');
   document.getElementById('pinNotes').value = '';
 
-  if (preSelectedChildId && children.some(c => String(c.childId) === String(preSelectedChildId))) {
-    childSel.value = preSelectedChildId;
-  }
-  preSelectedChildId = null;
-
   pinMode = false;
 }
 
@@ -703,7 +676,6 @@ function closePinPanel() {
   document.getElementById('pinPanel').style.display = 'none';
   pinMode = false;
   selectedVillageForPin = null;
-  preSelectedChildId = null;
   if (tempMarker) { tempMarker.setMap(null); tempMarker = null; }
 }
 
@@ -735,105 +707,19 @@ document.getElementById('savePinBtn').addEventListener('click', () => {
   .catch(err => { showLoading(false); alert('Network error: ' + err.message); });
 });
 
-// =========================================================================
-// RC SEARCH: type letters of the name, OR just the last 4 digits of the
-// Child ID / PU code. Tap a suggestion to jump to an existing pin, or -
-// if this RC has not been pinned yet - jump straight into pin mode with
-// that child already selected, ready to tap the map.
-// =========================================================================
-const rcSearchInput = document.getElementById('rcSearchInput');
-const rcSearchResults = document.getElementById('rcSearchResults');
-
-rcSearchInput.addEventListener('input', function() {
-  renderRcSearchResults(this.value);
-});
-rcSearchInput.addEventListener('focus', function() {
-  if (this.value.trim()) renderRcSearchResults(this.value);
-});
-rcSearchInput.addEventListener('keydown', function(e) {
-  if (e.key === 'Enter') {
-    const first = rcSearchResults.querySelector('.rcResultItem');
-    if (first) first.click();
-  } else if (e.key === 'Escape') {
-    rcSearchResults.style.display = 'none';
-  }
-});
-document.addEventListener('click', function(e) {
-  if (!document.getElementById('rcSearchBox').contains(e.target)) {
-    rcSearchResults.style.display = 'none';
-  }
-});
-
-function renderRcSearchResults(query) {
-  const q = query.trim().toLowerCase();
-  if (!q) { rcSearchResults.style.display = 'none'; rcSearchResults.innerHTML = ''; return; }
-
-  // Digits typed (e.g. last 4 of the Child ID / PU code) are matched as a
-  // suffix of the ID's digits. Letters typed are matched anywhere in the name.
-  const qDigits = q.replace(/\D/g, '');
-  const matches = roster.filter(r => {
-    const idStr = String(r.childId || '').toLowerCase();
-    const nameStr = String(r.name || '').toLowerCase();
-    if (nameStr.includes(q)) return true;
-    if (idStr.includes(q)) return true;
-    if (qDigits.length >= 2) {
-      const idDigits = idStr.replace(/\D/g, '');
-      if (idDigits.endsWith(qDigits)) return true;
-    }
-    return false;
-  }).slice(0, 20);
-
-  if (!matches.length) {
-    rcSearchResults.innerHTML = '<div class="rcNoResults">No matching RC found / រកមិនឃើញ</div>';
-    rcSearchResults.style.display = 'block';
+// ---------- Search for a pinned RC by Child ID (separate from village search) ----------
+document.getElementById('findChildBtn').addEventListener('click', () => {
+  const raw = prompt('Enter Child ID to find their pinned location:');
+  if (!raw) return;
+  const entry = markersByChildId[raw.trim()];
+  if (!entry) {
+    alert('No pinned location found for Child ID "' + raw + '". Check the ID, or this RC has not been pinned yet.');
     return;
   }
-
-  rcSearchResults.innerHTML = matches.map(r => {
-    const isPinned = !!markersByChildId[String(r.childId).trim()];
-    return `<div class="rcResultItem" data-child-id="${escapeHtml(r.childId)}">
-        <span class="rcStatus ${isPinned ? 'pinned' : 'unpinned'}">${isPinned ? '📍 Pinned' : '➕ Not pinned'}</span>
-        <div class="rcName">${escapeHtml(r.name)}</div>
-        <div class="rcMeta">ID: ${escapeHtml(r.childId)} · ${escapeHtml(r.village)}, ${escapeHtml(r.commune)}</div>
-      </div>`;
-  }).join('');
-  rcSearchResults.style.display = 'block';
-
-  rcSearchResults.querySelectorAll('.rcResultItem').forEach(el => {
-    el.addEventListener('click', () => {
-      const childId = el.dataset.childId;
-      const r = roster.find(x => String(x.childId) === String(childId));
-      if (r) selectRcSearchResult(r);
-    });
-  });
-}
-
-function selectRcSearchResult(r) {
-  rcSearchResults.style.display = 'none';
-  rcSearchInput.value = '';
-
-  const entry = markersByChildId[String(r.childId).trim()];
-  if (entry) {
-    map.panTo(entry.marker.getPosition());
-    map.setZoom(17);
-    entry.info.open(map, entry.marker);
-    showGeocodeStatus('📍 Showing pinned location for ' + r.name, 4000);
-    return;
-  }
-
-  const key = vKey(r.district, r.commune, r.village);
-  const center = villageCentersByKey[key];
-  if (!center) {
-    alert('The village "' + r.village + '" does not have a center point set yet.\nAsk an Admin to set it first (📌 Set Village Center), or use "➕ Pin RC" and search the village manually.');
-    return;
-  }
-  map.panTo({ lat: parseFloat(center.lat), lng: parseFloat(center.lng) });
+  map.panTo(entry.marker.getPosition());
   map.setZoom(17);
-  selectedVillageForPin = { district: r.district, commune: r.commune, village: r.village };
-  preSelectedChildId = r.childId;
-  pinMode = true;
-  showGeocodeStatus('📍 Tap the map at the RC home for ' + r.name + ' (' + r.childId + ')', 6000);
-}
+  entry.info.open(map, entry.marker);
+});
 
 function showGeocodeStatus(msg, autoHideMs) {
   const box = document.getElementById('geocodeStatus');
@@ -850,15 +736,15 @@ document.getElementById('signOutBtn').addEventListener('click', () => {
   google.accounts.id.disableAutoSelect();
   location.reload();
 });
-</script>
-<script>
-  if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => {
-      navigator.serviceWorker.register('service-worker.js').catch(err => {
-        console.warn('Service worker registration failed:', err);
-      });
+
+// ---------- PWA: register service worker (enables install-to-home-screen) ----------
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js').catch((err) => {
+      console.warn('Service worker registration failed (app still works normally):', err);
     });
-  }
+  });
+}
 </script>
 </body>
 </html>
