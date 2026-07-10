@@ -232,6 +232,19 @@
   <span style="font-size:13px;">For authorized World Vision staff and CVC only.</span></p>
   <div id="errorBox"></div>
   <div id="googleSignInBtn"></div>
+
+  <div style="margin:16px 0; color:#888; font-size:13px;">— OR —</div>
+
+  <div id="pinLoginBox">
+    <label style="display:block; font-size:13px; color:#444; margin-bottom:4px;">Your Name / ឈ្មោះរបស់អ្នក</label>
+    <input type="text" id="pinLoginName" list="pinNameDatalist" placeholder="Start typing your name..."
+      style="width:260px; padding:8px; border-radius:6px; border:1px solid #ccc; font-size:14px;">
+    <datalist id="pinNameDatalist"></datalist>
+    <label style="display:block; font-size:13px; color:#444; margin:10px 0 4px;">PIN</label>
+    <input type="password" id="pinLoginPin" inputmode="numeric" placeholder="Enter your PIN"
+      style="width:260px; padding:8px; border-radius:6px; border:1px solid #ccc; font-size:14px;">
+    <button id="pinLoginBtn" style="width:260px; margin-top:12px; padding:10px; background:#1b5e20; color:white; border:none; border-radius:6px; font-size:14px; cursor:pointer;">Log In</button>
+  </div>
 </div>
 
 <!-- MAIN APP SCREEN -->
@@ -314,6 +327,14 @@ let villageCenters = []; // { district, commune, village, lat, lng }
 let villageCentersByKey = {}; // "district|commune|village" -> center
 let villageDisplayToKey = {}; // "Village - Commune - District" -> "district|commune|village"
 let selectedVillageForPin = null; // { district, commune, village }
+let pinCredentials = null; // { loginCode, pin } - set when logging in via PIN instead of Google
+
+// Returns whatever credentials fields should be sent with each request,
+// depending on whether this session logged in via Google or via Name+PIN.
+function authCredentials() {
+  if (pinCredentials) return { loginCode: pinCredentials.loginCode, pin: pinCredentials.pin };
+  return { idToken: idToken };
+}
 
 // ---------- Google Sign-In ----------
 window.onload = function() {
@@ -325,7 +346,56 @@ window.onload = function() {
     document.getElementById('googleSignInBtn'),
     { theme: 'filled_blue', size: 'large', text: 'signin_with' }
   );
+  loadPinLoginNames();
 };
+
+// ---------- Name + PIN login (for CVC without email) ----------
+let pinNameDisplayToCode = {}; // "Sok Dara (CVC01)" -> "CVC01"
+
+function loadPinLoginNames() {
+  fetch(APPS_SCRIPT_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ action: 'getLoginOptions' })
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (!data.ok) return;
+    pinNameDisplayToCode = {};
+    const datalist = document.getElementById('pinNameDatalist');
+    let options = '';
+    data.options.forEach(o => {
+      const display = o.name + ' (' + o.loginCode + ')';
+      pinNameDisplayToCode[display] = o.loginCode;
+      options += `<option value="${escapeHtml(display)}">`;
+    });
+    datalist.innerHTML = options;
+  })
+  .catch(() => { /* silently ignore - Google Sign-In still works if this fails */ });
+}
+
+document.getElementById('pinLoginBtn').addEventListener('click', () => {
+  const typedName = document.getElementById('pinLoginName').value.trim();
+  const loginCode = pinNameDisplayToCode[typedName];
+  const pin = document.getElementById('pinLoginPin').value.trim();
+  if (!typedName || !loginCode) { showError('Please pick your name from the list (start typing, then select the matching suggestion).'); return; }
+  if (!pin) { showError('Please enter your PIN.'); return; }
+
+  showLoading(true);
+  fetch(APPS_SCRIPT_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ action: 'login', loginCode: loginCode, pin: pin })
+  })
+  .then(r => r.json())
+  .then(data => {
+    showLoading(false);
+    if (!data.ok) { showError(data.error || 'Login failed.'); return; }
+    pinCredentials = { loginCode: loginCode, pin: pin };
+    onLoginSuccess(data);
+  })
+  .catch(err => { showLoading(false); showError('Network error contacting server. ' + err.message); });
+});
 
 function handleCredentialResponse(response) {
   idToken = response.credential;
@@ -342,27 +412,31 @@ function handleCredentialResponse(response) {
       showError(data.error || 'Login failed.');
       return;
     }
-    currentUser = data.user;
-    roster = data.roster || [];
-    villageCenters = data.villageCenters || [];
-    buildVillageLookups();
-
-    document.getElementById('loginScreen').style.display = 'none';
-    document.getElementById('appScreen').style.display = 'flex';
-    document.getElementById('userInfo').textContent =
-      currentUser.name + ' (' + currentUser.role + ')';
-
-    if (String(currentUser.role).toLowerCase() === 'admin') {
-      document.getElementById('toggleVillageCenterBtn').style.display = 'inline-block';
-      populateVCDistrictDropdown();
-    }
-
-    initMapAndLoadMarkers(data.locations);
+    onLoginSuccess(data);
   })
   .catch(err => {
     showLoading(false);
     showError('Network error contacting server. ' + err.message);
   });
+}
+
+function onLoginSuccess(data) {
+  currentUser = data.user;
+  roster = data.roster || [];
+  villageCenters = data.villageCenters || [];
+  buildVillageLookups();
+
+  document.getElementById('loginScreen').style.display = 'none';
+  document.getElementById('appScreen').style.display = 'flex';
+  document.getElementById('userInfo').textContent =
+    currentUser.name + ' (' + currentUser.role + ')';
+
+  if (String(currentUser.role).toLowerCase() === 'admin') {
+    document.getElementById('toggleVillageCenterBtn').style.display = 'inline-block';
+    populateVCDistrictDropdown();
+  }
+
+  initMapAndLoadMarkers(data.locations);
 }
 
 function showError(msg) {
@@ -454,7 +528,7 @@ function addMarkerForLocation(loc) {
   const photoSrc = toDirectImageUrl(loc.childPhotoUrl);
   const info = new google.maps.InfoWindow({
     content: `<div class="infoWindowContent">
-        ${photoSrc ? `<img src="${escapeHtml(photoSrc)}" alt="Photo" style="width:100%;max-width:220px;border-radius:8px;margin-bottom:6px;display:block;" onerror="this.style.display='none';">` : ''}
+        ${photoSrc ? `<img src="${escapeHtml(photoSrc)}" alt="Photo" referrerpolicy="no-referrer" style="width:100%;max-width:220px;border-radius:8px;margin-bottom:6px;display:block;" onerror="this.style.display='none';">` : ''}
         <strong>Child ID:</strong> ${escapeHtml(loc.childId)}<br>
         ${loc.childName ? '<strong>Name:</strong> ' + escapeHtml(loc.childName) + '<br>' : ''}
         ${loc.notes ? '<em>' + escapeHtml(loc.notes) + '</em><br>' : ''}
@@ -476,7 +550,7 @@ function deleteLocationHandler(childId, lat, lng) {
   fetch(APPS_SCRIPT_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify({ action: 'deleteLocation', idToken: idToken, childId: childId, lat: lat, lng: lng })
+    body: JSON.stringify(Object.assign({ action: 'deleteLocation', childId: childId, lat: lat, lng: lng }, authCredentials()))
   })
   .then(r => r.json())
   .then(data => {
@@ -586,10 +660,10 @@ document.getElementById('vcSaveBtn').addEventListener('click', () => {
   fetch(APPS_SCRIPT_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify({
-      action: 'setVillageCenter', idToken: idToken,
+    body: JSON.stringify(Object.assign({
+      action: 'setVillageCenter',
       district, commune, village, lat: panel.dataset.lat, lng: panel.dataset.lng
-    })
+    }, authCredentials()))
   })
   .then(r => r.json())
   .then(data => {
@@ -691,10 +765,10 @@ document.getElementById('savePinBtn').addEventListener('click', () => {
   fetch(APPS_SCRIPT_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify({
-      action: 'addLocation', idToken: idToken, childId: childId,
+    body: JSON.stringify(Object.assign({
+      action: 'addLocation', childId: childId,
       lat: panel.dataset.lat, lng: panel.dataset.lng, notes: notes
-    })
+    }, authCredentials()))
   })
   .then(r => r.json())
   .then(data => {
