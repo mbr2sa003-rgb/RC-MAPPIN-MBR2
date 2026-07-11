@@ -36,14 +36,16 @@
     color: #1f2d24;
   }
   #loginScreen {
-    height: 100vh;
+    min-height: 100vh;
+    height: auto;
     display: flex;
     flex-direction: column;
     align-items: center;
-    justify-content: center;
+    justify-content: flex-start;
     gap: 16px;
-    padding: 20px;
+    padding: 30px 20px;
     text-align: center;
+    overflow-y: auto;
   }
   #loginScreen h1 { color: #1b5e20; margin-bottom: 4px; }
   #loginScreen p { color: #4a5c50; max-width: 340px; }
@@ -287,6 +289,19 @@
   <span style="font-size:13px;">For authorized World Vision staff and CVC only.</span></p>
   <div id="errorBox"></div>
   <div id="googleSignInBtn"></div>
+
+  <div style="margin:16px 0; color:#888; font-size:13px;">— OR —</div>
+
+  <div id="pinLoginBox">
+    <label style="display:block; font-size:13px; color:#444; margin-bottom:4px;">Name or Email / ឈ្មោះ ឬ អ៊ីមែល</label>
+    <input type="text" id="pinLoginName" list="pinNameDatalist" placeholder="Start typing your name or email..."
+      style="width:260px; padding:8px; border-radius:6px; border:1px solid #ccc; font-size:14px;" autocomplete="off">
+    <datalist id="pinNameDatalist"></datalist>
+    <label style="display:block; font-size:13px; color:#444; margin:10px 0 4px;">4-Digit PIN / លេខសម្ងាត់ ៤ខ្ទង់</label>
+    <input type="password" id="pinLoginPin" inputmode="numeric" maxlength="4" pattern="[0-9]{4}"
+      placeholder="••••" style="width:260px; padding:8px; border-radius:6px; border:1px solid #ccc; font-size:16px; letter-spacing:6px; text-align:center;">
+    <button id="pinLoginBtn" style="width:260px; margin-top:12px; padding:10px; background:#1b5e20; color:white; border:none; border-radius:6px; font-size:14px; cursor:pointer;">Log In</button>
+  </div>
 </div>
 
 <!-- MAIN APP SCREEN -->
@@ -376,6 +391,14 @@ let selectedVillageForPin = null; // { district, commune, village }
 let preSelectedChildId = null; // set when a specific child was chosen via the RC search box
 let pinChildDisplayToChild = {}; // "ChildID - Name" -> { childId, name } for the current village's pin panel
 let RcLabelOverlay; // custom overlay class for always-visible ID/name label, defined once google.maps is ready
+let pinCredentials = null; // { loginCode, pin } - set when logging in via Name/Email + PIN instead of Google
+
+// Returns whichever credential fields should be sent with each request,
+// depending on whether this session logged in via Google or via Name/Email + PIN.
+function authCredentials() {
+  if (pinCredentials) return { loginCode: pinCredentials.loginCode, pin: pinCredentials.pin };
+  return { idToken: idToken };
+}
 
 // ---------- Google Sign-In ----------
 window.onload = function() {
@@ -387,7 +410,59 @@ window.onload = function() {
     document.getElementById('googleSignInBtn'),
     { theme: 'filled_blue', size: 'large', text: 'signin_with' }
   );
+  loadPinLoginNames();
 };
+
+// ---------- Name/Email + 4-digit PIN login (for CVC without a Google account) ----------
+let pinNameDisplayToCode = {}; // "Sok Dara (sok@wvi.org)" -> "sok@wvi.org"
+
+function loadPinLoginNames() {
+  fetch(APPS_SCRIPT_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ action: 'getLoginOptions' })
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (!data.ok) return;
+    pinNameDisplayToCode = {};
+    const datalist = document.getElementById('pinNameDatalist');
+    let options = '';
+    data.options.forEach(o => {
+      const display = o.name + ' (' + o.loginCode + ')';
+      pinNameDisplayToCode[display] = o.loginCode;
+      options += `<option value="${escapeHtml(display)}">`;
+    });
+    datalist.innerHTML = options;
+  })
+  .catch(() => { /* silently ignore - Google Sign-In still works if this fails */ });
+}
+
+document.getElementById('pinLoginBtn').addEventListener('click', () => {
+  const typedName = document.getElementById('pinLoginName').value.trim();
+  const loginCode = pinNameDisplayToCode[typedName] || typedName; // allow typing the email/name directly too
+  const pin = document.getElementById('pinLoginPin').value.trim();
+  if (!typedName) { showError('Please enter your name or email, and pick the matching suggestion if one appears.'); return; }
+  if (!/^[0-9]{4}$/.test(pin)) { showError('PIN must be exactly 4 digits.'); return; }
+
+  showLoading(true);
+  fetch(APPS_SCRIPT_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ action: 'login', loginCode: loginCode, pin: pin })
+  })
+  .then(r => r.json())
+  .then(data => {
+    showLoading(false);
+    if (!data.ok) { showError(data.error || 'Login failed. Check your name/email and PIN.'); return; }
+    pinCredentials = { loginCode: loginCode, pin: pin };
+    onLoginSuccess(data);
+  })
+  .catch(err => { showLoading(false); showError('Network error contacting server. ' + err.message); });
+});
+document.getElementById('pinLoginPin').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') document.getElementById('pinLoginBtn').click();
+});
 
 function handleCredentialResponse(response) {
   idToken = response.credential;
@@ -404,27 +479,31 @@ function handleCredentialResponse(response) {
       showError(data.error || 'Login failed.');
       return;
     }
-    currentUser = data.user;
-    roster = data.roster || [];
-    villageCenters = data.villageCenters || [];
-    buildVillageLookups();
-
-    document.getElementById('loginScreen').style.display = 'none';
-    document.getElementById('appScreen').style.display = 'flex';
-    document.getElementById('userInfo').textContent =
-      currentUser.name + ' (' + currentUser.role + ')';
-
-    if (String(currentUser.role).toLowerCase() === 'admin') {
-      document.getElementById('toggleVillageCenterBtn').style.display = 'inline-block';
-      populateVCDistrictDropdown();
-    }
-
-    initMapAndLoadMarkers(data.locations);
+    onLoginSuccess(data);
   })
   .catch(err => {
     showLoading(false);
     showError('Network error contacting server. ' + err.message);
   });
+}
+
+function onLoginSuccess(data) {
+  currentUser = data.user;
+  roster = data.roster || [];
+  villageCenters = data.villageCenters || [];
+  buildVillageLookups();
+
+  document.getElementById('loginScreen').style.display = 'none';
+  document.getElementById('appScreen').style.display = 'flex';
+  document.getElementById('userInfo').textContent =
+    currentUser.name + ' (' + currentUser.role + ')';
+
+  if (String(currentUser.role).toLowerCase() === 'admin') {
+    document.getElementById('toggleVillageCenterBtn').style.display = 'inline-block';
+    populateVCDistrictDropdown();
+  }
+
+  initMapAndLoadMarkers(data.locations);
 }
 
 function showError(msg) {
@@ -570,7 +649,7 @@ function deleteLocationHandler(childId, lat, lng) {
   fetch(APPS_SCRIPT_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify({ action: 'deleteLocation', idToken: idToken, childId: childId, lat: lat, lng: lng })
+    body: JSON.stringify(Object.assign({ action: 'deleteLocation', childId: childId, lat: lat, lng: lng }, authCredentials()))
   })
   .then(r => r.json())
   .then(data => {
@@ -681,10 +760,10 @@ document.getElementById('vcSaveBtn').addEventListener('click', () => {
   fetch(APPS_SCRIPT_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify({
-      action: 'setVillageCenter', idToken: idToken,
+    body: JSON.stringify(Object.assign({
+      action: 'setVillageCenter',
       district, commune, village, lat: panel.dataset.lat, lng: panel.dataset.lng
-    })
+    }, authCredentials()))
   })
   .then(r => r.json())
   .then(data => {
@@ -805,10 +884,10 @@ document.getElementById('savePinBtn').addEventListener('click', () => {
   fetch(APPS_SCRIPT_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify({
-      action: 'addLocation', idToken: idToken, childId: childId,
+    body: JSON.stringify(Object.assign({
+      action: 'addLocation', childId: childId,
       lat: panel.dataset.lat, lng: panel.dataset.lng, notes: notes
-    })
+    }, authCredentials()))
   })
   .then(r => r.json())
   .then(data => {
