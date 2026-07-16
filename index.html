@@ -540,6 +540,14 @@ function buildVillageLookups() {
 }
 
 // ---------- Google Maps ----------
+// ---------- Deep link support: MBR2 Sponsorship Management dashboard links here as
+// ?childId=<ChildID> so staff can jump straight from a child's profile to their pin. ----------
+function getDeepLinkChildId() {
+  try {
+    return new URLSearchParams(window.location.search).get('childId');
+  } catch (e) { return null; }
+}
+
 function loadGoogleMapsScript() {
   const script = document.createElement('script');
   script.src = 'https://maps.googleapis.com/maps/api/js?key=' + GOOGLE_MAPS_API_KEY;
@@ -590,6 +598,18 @@ function initMapAndLoadMarkers(locations) {
     });
 
     locations.forEach(addMarkerForLocation);
+
+    const deepLinkChildId = getDeepLinkChildId();
+    if (deepLinkChildId) {
+      const entry = markersByChildId[String(deepLinkChildId).trim()];
+      if (entry) {
+        map.panTo(entry.marker.getPosition());
+        map.setZoom(17);
+        entry.info.open(map, entry.marker);
+      } else {
+        showGeocodeStatus('No pinned location found yet for Child ID ' + deepLinkChildId, 6000);
+      }
+    }
 
     map.addListener('click', (e) => {
       if (villageCenterMode) { onVillageCenterMapTapped(e.latLng.lat(), e.latLng.lng()); return; }
